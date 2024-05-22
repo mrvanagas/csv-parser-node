@@ -1,0 +1,29 @@
+{
+  "name": "telesoft-task",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^20.12.12",
+    "aws-sdk": "^2.1623.0",
+    "csv-parser": "^3.0.0",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^16.4.5",
+    "fast-csv": "^5.0.1",
+    "json2csv": "^6.0.0-alpha.2",
+    "pg": "^8.11.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  },
+  "devDependencies": {
+    "@types/json2csv": "^5.0.7",
+    "@types/pg": "^8.11.6"
+  }
+}

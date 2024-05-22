@@ -1,0 +1,20 @@
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE configuration files
+.vscode/
+.idea/
+
+# Node.js dependencies
+node_modules/
+
+# Build artifacts
+dist/
+build/
+
+# Environment variables
+.env
+
+# JavaScript specific
+*.js.map
