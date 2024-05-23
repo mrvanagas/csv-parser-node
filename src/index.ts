@@ -39,21 +39,19 @@ const readCSV = <T extends ObjectMap<any>>(filePath: string): Promise<T[]> => {
   });
 };
 
-const parseIdArtists = (artists: string | string[]): string[] => {
-  if (Array.isArray(artists)) {
-    return artists;
+const parseArray = (array: string | string[]): string[] => {
+  if (Array.isArray(array)) {
+    return array;
   }
 
   try {
-    const cleanedIdArtists = artists
-      .replace(/'/g, '"')
-      .replace(/^\[|\]$/g, '');
-    return JSON.parse(`[${cleanedIdArtists}]`);
+    const cleanedArray = array.replace(/'/g, '"').replace(/^\[|\]$/g, '');
+    return JSON.parse(`[${cleanedArray}]`);
   } catch (error) {
-    return artists
+    return array
       .replace(/^\[|\]$/g, '')
       .split(',')
-      .map((artist) => artist.trim().replace(/^'|'$/g, ''));
+      .map((item) => item.trim().replace(/^'|'$/g, ''));
   }
 };
 
@@ -71,7 +69,7 @@ const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
         danceabilityLabel = 'High';
       }
 
-      const idArtistsArray = parseIdArtists(track.id_artists);
+      const idArtistsArray = parseArray(track.id_artists);
 
       return {
         ...track,
@@ -79,10 +77,12 @@ const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
         release_month: month,
         release_day: day,
         danceability_label: danceabilityLabel,
-        id_artists: `{${idArtistsArray.join(',')}}`,
+        id_artists: `{${idArtistsArray.join(',')}}`, // Ensure array is correctly formatted
+        artists: parseArray(track.artists), // Ensure artists is an array
       };
     });
 };
+
 const filterArtists = async (
   artists: Artist[],
   tracks: TransformedTrack[],
@@ -109,6 +109,16 @@ const ensureArray = (field: string | string[]): string[] => {
   } catch (error) {
     return field.split(',').map((item) => item.trim());
   }
+};
+
+const handleEmptyValues = (value: string | undefined): string | number | null => {
+  if (value === undefined || value === '') {
+    return null;
+  }
+  if (!isNaN(Number(value))) {
+    return Number(value);
+  }
+  return value;
 };
 
 const writeCSV = async <T extends ObjectMap<any>>(
@@ -182,7 +192,7 @@ const loadCSVToPostgres = async (
 
     csvStream.on('data', async (row) => {
       const transformedRow = headers.reduce((acc, header) => {
-        acc[header] = row[header];
+        acc[header] = handleEmptyValues(row[header]);
         return acc;
       }, {} as ObjectMap<unknown>);
       const columns = Object.keys(transformedRow);
@@ -247,7 +257,6 @@ const main = async () => {
       'explicit',
       'artists',
       'id_artists',
-      'release_date',
       'energy',
       'key',
       'loudness',
@@ -298,7 +307,6 @@ const main = async () => {
       'explicit',
       'artists',
       'id_artists',
-      'release_date',
       'energy',
       'key',
       'loudness',

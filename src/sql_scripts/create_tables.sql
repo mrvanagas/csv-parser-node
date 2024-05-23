@@ -4,9 +4,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     popularity INT,
     duration_ms INT,
     explicit BOOLEAN,
-    artists TEXT[],
+    artists TEXT,
     id_artists TEXT,
-    release_date DATE,
     energy FLOAT,
     key INT,
     loudness FLOAT,
@@ -22,7 +21,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     release_month INT,
     release_day INT,
     danceability_label VARCHAR(50),
-    artist_followers INT,
+    artist_followers FLOAT,
     artist_genres TEXT,
     artist_popularity INT
 );
