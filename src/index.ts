@@ -18,6 +18,15 @@ const transformedDataFile = path.join(
   __dirname,
   '../data/transformed_data.csv',
 );
+const createTablesFile = path.join(
+  __dirname,
+  '../src/sql_scripts/create_tables.sql',
+);
+
+const s3BucketName = process.env.S3_BUCKET_NAME as string;
+if (!s3BucketName) {
+  throw new Error('S3_BUCKET_NAME environment variable is not set');
+}
 
 const readCSV = <T extends ObjectMap<any>>(filePath: string): Promise<T[]> => {
   return new Promise((resolve, reject) => {
@@ -30,21 +39,21 @@ const readCSV = <T extends ObjectMap<any>>(filePath: string): Promise<T[]> => {
   });
 };
 
-const parseIdArtists = (id_artists: string | string[]): string[] => {
-  if (Array.isArray(id_artists)) {
-    return id_artists;
+const parseIdArtists = (artists: string | string[]): string[] => {
+  if (Array.isArray(artists)) {
+    return artists;
   }
 
   try {
-    const cleanedIdArtists = id_artists
+    const cleanedIdArtists = artists
       .replace(/'/g, '"')
       .replace(/^\[|\]$/g, '');
     return JSON.parse(`[${cleanedIdArtists}]`);
   } catch (error) {
-    return id_artists
+    return artists
       .replace(/^\[|\]$/g, '')
       .split(',')
-      .map((id) => id.trim().replace(/^'|'$/g, ''));
+      .map((artist) => artist.trim().replace(/^'|'$/g, ''));
   }
 };
 
@@ -82,12 +91,10 @@ const filterArtists = async (
   const trackArtistIds = new Set(
     tracks.flatMap((track) => track.id_artists.replace(/[{}]/g, '').split(',')),
   );
-  console.log('Track artist IDs:', Array.from(trackArtistIds));
 
   const filteredArtists = artists.filter((artist) =>
     trackArtistIds.has(artist.id),
   );
-  console.log('Filtered artists:', filteredArtists);
 
   return filteredArtists;
 };
@@ -118,6 +125,87 @@ const writeCSV = async <T extends ObjectMap<any>>(
   console.log(`Finished writing ${filePath}`);
 };
 
+const uploadToS3 = async (
+  filePath: string,
+  bucketName: string,
+  key: string,
+): Promise<void> => {
+  const s3 = new AWS.S3();
+  const fileStream = fs.createReadStream(filePath);
+
+  const params = {
+    Bucket: bucketName,
+    Key: key,
+    Body: fileStream,
+  };
+
+  await s3.upload(params).promise();
+  console.log(`File uploaded successfully to ${bucketName}/${key}`);
+};
+
+const downloadFromS3 = async (
+  bucketName: string,
+  key: string,
+  downloadPath: string,
+): Promise<void> => {
+  const s3 = new AWS.S3();
+  const params = {
+    Bucket: bucketName,
+    Key: key,
+  };
+
+  const data = await s3.getObject(params).promise();
+  fs.writeFileSync(downloadPath, data.Body as Buffer);
+  console.log(`File downloaded successfully from ${bucketName}/${key}`);
+};
+
+const executeSQLFile = async (
+  client: Client,
+  filePath: string,
+): Promise<void> => {
+  const sql = fs.readFileSync(filePath, 'utf8');
+  await client.query(sql);
+  console.log(`SQL script ${filePath} executed successfully.`);
+};
+
+const loadCSVToPostgres = async (
+  client: Client,
+  filePath: string,
+  tableName: string,
+  headers: string[],
+): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    const readStream = fs.createReadStream(filePath);
+    const csvStream = csv();
+
+    readStream.pipe(csvStream);
+
+    csvStream.on('data', async (row) => {
+      const transformedRow = headers.reduce((acc, header) => {
+        acc[header] = row[header];
+        return acc;
+      }, {} as ObjectMap<unknown>);
+      const columns = Object.keys(transformedRow);
+      const values = Object.values(transformedRow);
+      const query = `INSERT INTO ${tableName} (${columns.join(
+        ', ',
+      )}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`;
+      try {
+        await client.query(query, values);
+      } catch (err) {
+        reject(err);
+      }
+    });
+
+    csvStream.on('end', () => {
+      console.log(`CSV data loaded into ${tableName}`);
+      resolve();
+    });
+
+    csvStream.on('error', (err) => reject(err));
+  });
+};
+
 const main = async () => {
   try {
     console.log('Starting script...');
@@ -133,14 +221,15 @@ const main = async () => {
     const filteredArtists = await filterArtists(artists, filteredTracks);
     console.log(`Filtered down to ${filteredArtists.length} artists`);
 
-    const artistLookup = new Map(filteredArtists.map(artist => [artist.id, artist]));
+    const artistLookup = new Map(
+      filteredArtists.map((artist) => [artist.id, artist]),
+    );
 
+    console.log('Processing tracks, please wait...');
     const combinedData = filteredTracks.map((track) => {
-      console.log('Processing tracks, please wait...');
-    
-      const artist = artistLookup.get(track.id_artists);
+      const artist = artistLookup.get(track.id_artists.replace(/[{}]/g, ''));
       const genres = artist ? ensureArray(artist.genres).join(', ') : '';
-    
+
       return {
         ...track,
         artist_name: artist ? artist.name : 'Unknown',
@@ -159,7 +248,6 @@ const main = async () => {
       'artists',
       'id_artists',
       'release_date',
-      'danceability',
       'energy',
       'key',
       'loudness',
@@ -175,272 +263,68 @@ const main = async () => {
       'release_month',
       'release_day',
       'danceability_label',
-      'artist_name',
       'artist_followers',
       'artist_genres',
       'artist_popularity',
     ]);
 
     console.log('Data transformation complete.');
+
+    await uploadToS3(transformedDataFile, s3BucketName, 'transformed_data.csv');
+
+    const client = new Client({
+      user: process.env.PG_USER,
+      host: process.env.PG_HOST,
+      database: process.env.PG_DATABASE,
+      password: process.env.PG_PASSWORD,
+      port: parseInt(process.env.PG_PORT as string, 10),
+    });
+
+    await client.connect();
+
+    await executeSQLFile(client, createTablesFile);
+
+    await downloadFromS3(
+      s3BucketName,
+      'transformed_data.csv',
+      transformedDataFile,
+    );
+
+    await loadCSVToPostgres(client, transformedDataFile, 'tracks', [
+      'id',
+      'name',
+      'popularity',
+      'duration_ms',
+      'explicit',
+      'artists',
+      'id_artists',
+      'release_date',
+      'energy',
+      'key',
+      'loudness',
+      'mode',
+      'speechiness',
+      'acousticness',
+      'instrumentalness',
+      'liveness',
+      'valence',
+      'tempo',
+      'time_signature',
+      'release_year',
+      'release_month',
+      'release_day',
+      'danceability_label',
+      'artist_followers',
+      'artist_genres',
+      'artist_popularity',
+    ]);
+
+    await client.end();
+
+    console.log('Data loaded into PostgreSQL successfully.');
   } catch (error) {
     console.error('Error processing CSV files', error);
   }
 };
 
 main().catch((error) => console.error('Error in main function', error));
-
-// import * as fs from 'fs';
-// import * as path from 'path';
-// import csv from 'csv-parser';
-// import { Artist } from './models/artists';
-// import { Track } from './models/tracks';
-// import { createObjectCsvWriter } from 'csv-writer';
-// import { Parser } from 'json2csv';
-
-// const artistsFilePath = path.resolve(__dirname, '../data/artists.csv');
-// const tracksFilePath = path.resolve(__dirname, '../data/tracks.csv');
-// const outputFilePath = path.resolve(__dirname, '../data/joined.csv');
-
-// // Read CSV file
-// function readCSV(filePath: string): Promise<any[]> {
-//   return new Promise((resolve, reject) => {
-//     const results: any[] = [];
-//     fs.createReadStream(filePath)
-//       .pipe(csv())
-//       .on('data', (data) => results.push(data))
-//       .on('end', () => resolve(results))
-//       .on('error', (error) => reject(error));
-//   });
-// }
-
-// // Filter tracks
-// function filterTracks(tracks: Track[]): Track[] {
-//   return tracks.filter((track) => track.name && track.duration_ms >= 60000);
-// }
-
-// // Filter artists
-// function filterArtists(tracks: any[], artists: any[]): any[] {
-//   const artistIds = new Set(
-//     tracks
-//       .map((track) => {
-//         const parsedIds = track.id_artists
-//           .slice(1, -1)
-//           .split(',')
-//           .map((id: string) => id.trim().replace(/'/g, ''));
-//         return parsedIds;
-//       })
-//       .flat(),
-//   );
-//   return artists.filter((artist) => artistIds.has(artist.id));
-// }
-
-// // Transform data
-// function transformData(tracks: any[]): any[] {
-//   return tracks.map((track) => {
-//     const [year, month, day] = track.release_date.split('-');
-//     let danceability;
-//     if (track.danceability < 0.5) {
-//       danceability = 'Low';
-//     } else if (track.danceability <= 0.6) {
-//       danceability = 'Medium';
-//     } else {
-//       danceability = 'High';
-//     }
-//     return {
-//       ...track,
-//       year,
-//       month,
-//       day,
-//       danceability,
-//     };
-//   });
-// }
-
-// // Combine data
-// function combineData(tracks: any[], artists: any[]): any[] {
-//   const artistMap = new Map(artists.map((artist) => [artist.id, artist]));
-//   return tracks.map((track) => {
-//     const artistIds = track.id_artists
-//       .slice(1, -1)
-//       .split(',')
-//       .map((id: string) => id.trim().replace(/'/g, ''));
-//     const mainArtist = artistMap.get(artistIds[0]);
-//     return {
-//       ...track,
-//       artist_name: mainArtist.name,
-//       artist_followers: mainArtist.followers,
-//       artist_genres: mainArtist.genres,
-//     };
-//   });
-// }
-
-// // Write CSV file
-// function writeCSV(filePath: string, data: any[]): void {
-//   const header = Object.keys(data[0]).join(',') + '\n';
-//   const csvData = data.map((row) => Object.values(row).join(',')).join('\n');
-//   fs.writeFileSync(filePath, header + csvData);
-// }
-
-// // Main function
-// async function main() {
-//   const artists = await readCSV(path.resolve(__dirname, artistsFilePath));
-//   const tracks = await readCSV(path.resolve(__dirname, tracksFilePath));
-
-//   const filteredTracks = filterTracks(tracks);
-//   const filteredArtists = filterArtists(filteredTracks, artists);
-//   const transformedTracks = transformData(filteredTracks);
-//   const combinedData = combineData(transformedTracks, filteredArtists);
-
-//   writeCSV(path.resolve(__dirname, outputFilePath), combinedData);
-// }
-
-// main().catch(console.error);
-
-// // Arrays to store the data
-// const artists: Artist[] = [];
-// const tracks: Track[] = [];
-
-// // Function to load CSV data
-// const loadCSV = (filePath: string): Promise<any[]> => {
-//   return new Promise((resolve, reject) => {
-//     const results: any[] = [];
-//     fs.createReadStream(filePath)
-//       .pipe(csv())
-//       .on('data', (data) => results.push(data))
-//       .on('end', () => resolve(results))
-//       .on('error', (error) => reject(error));
-//   });
-// };
-
-// // Helper function to safely parse JSON
-// const safeParseJSON = (json: string): any => {
-//     try {
-//       return JSON.parse(json.replace(/'/g, '"'));
-//     } catch (error) {
-//       return [];
-//     }
-//   };
-
-//   // Functions to parse the CSV data into the appropriate interfaces
-//   const parseArtists = (data: any[]): Artist[] => {
-//     return data.map((row) => ({
-//       id: row.id,
-//       followers: parseFloat(row.followers),
-//       genres: safeParseJSON(row.genres),
-//       name: row.name,
-//       popularity: parseInt(row.popularity, 10),
-//     }));
-//   };
-
-// const parseTracks = (data: any[]): Track[] => {
-//   return data.map((row) => ({
-//     id: row.id,
-//     name: row.name,
-//     popularity: parseInt(row.popularity, 10),
-//     duration_ms: parseInt(row.duration_ms, 10),
-//     explicit: parseInt(row.explicit),
-//     artists: safeParseJSON(row.artists),
-//     id_artists: safeParseJSON(row.id_artists),
-//     release_date: row.release_date,
-//     danceability: parseFloat(row.danceability),
-//     energy: parseFloat(row.energy),
-//     key: parseInt(row.key, 10),
-//     loudness: parseFloat(row.loudness),
-//     mode: parseInt(row.mode, 10),
-//     speechiness: parseFloat(row.speechiness),
-//     acousticness: parseFloat(row.acousticness),
-//     instrumentalness: parseFloat(row.instrumentalness),
-//     liveness: parseFloat(row.liveness),
-//     valence: parseFloat(row.valence),
-//     tempo: parseFloat(row.tempo),
-//     time_signature: parseInt(row.time_signature, 10),
-//   }));
-// };
-
-// // Function to filter and transform the data
-// const filterAndTransformData = (artists: Artist[], tracks: Track[]) => {
-//   const filteredTracks = tracks.filter((track) => {
-//     return track.name && track.duration_ms >= 60000;
-//   });
-
-//   const artistIdsWithValidTracks = new Set(
-//     filteredTracks.flatMap((track) => track.id_artists),
-//   );
-
-//   const filteredArtists = artists.filter((artist) =>
-//     artistIdsWithValidTracks.has(artist.id),
-//   );
-
-//   const transformedTracks = filteredTracks.map((track) => {
-//     const [year, month, day] = track.release_date.split('-').map(Number);
-//     let danceability: string;
-//     if (track.danceability < 0.5) {
-//       danceability = 'Low';
-//     } else if (track.danceability <= 0.6) {
-//       danceability = 'Medium';
-//     } else {
-//       danceability = 'High';
-//     }
-//     return {
-//       ...track,
-//       year,
-//       month,
-//       day,
-//       danceability,
-//     };
-//   });
-
-//   const joinedData = transformedTracks.map((track) => {
-//     const artist = filteredArtists.find(
-//       (artist) => artist.id === track.id_artists[0],
-//     );
-//     return {
-//       ...track,
-//       artist_name: artist ? artist.name : '',
-//       artist_followers: artist ? artist.followers : 0,
-//       artist_genres: artist ? artist.genres.join(', ') : '',
-//       artist_popularity: artist ? artist.popularity : 0,
-//     };
-//   });
-
-//   console.log('Filtered and transformed tracks:', transformedTracks.length);
-//   console.log('Filtered artists:', filteredArtists.length);
-//   console.log('Joined data:', joinedData.length);
-
-//   return joinedData;
-// };
-
-// // Function to save data to CSV
-// const saveToCSV = (data: any[], filePath: string) => {
-//   if (data.length === 0) {
-//     console.error('No data to save.');
-//     return;
-//   }
-
-//   const parser = new Parser();
-//   const csv = parser.parse(data);
-//   fs.writeFileSync(filePath, csv);
-// };
-
-// // Load the data and perform the transformations
-// const processFiles = async () => {
-//   try {
-//     const artistsData = await loadCSV(path.resolve(__dirname, artistsFilePath));
-//     const tracksData = await loadCSV(path.resolve(__dirname, tracksFilePath));
-
-//     const parsedArtists = parseArtists(artistsData);
-//     const parsedTracks = parseTracks(tracksData);
-
-//     const joinedData = filterAndTransformData(parsedArtists, parsedTracks);
-
-//     if (joinedData.length > 0) {
-//       saveToCSV(joinedData, path.resolve(__dirname, outputFilePath));
-//     } else {
-//       console.error('No joined data to save.');
-//     }
-//   } catch (error) {
-//     console.error('Error processing files:', error);
-//   }
-// };
-
-// processFiles();
