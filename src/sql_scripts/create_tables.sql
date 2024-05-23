@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS tracks (
-    id VARCHAR(255) PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
     popularity INT,
     duration_ms INT,
     explicit BOOLEAN,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     release_year INT,
     release_month INT,
     release_day INT,
-    danceability_label VARCHAR(50),
+    danceability_label VARCHAR,
     artist_followers FLOAT,
     artist_genres TEXT,
     artist_popularity INT

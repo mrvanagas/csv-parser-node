@@ -4,9 +4,11 @@ import csv from 'csv-parser';
 import { createObjectCsvWriter } from 'csv-writer';
 import AWS from 'aws-sdk';
 import { Client } from 'pg';
+import dotenv from 'dotenv';
 import { Artist } from './models/artists';
 import { Track, TransformedTrack } from './models/tracks';
-import dotenv from 'dotenv';
+import { exec } from 'child_process';
+import util from 'util';
 
 dotenv.config();
 
@@ -77,8 +79,8 @@ const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
         release_month: month,
         release_day: day,
         danceability_label: danceabilityLabel,
-        id_artists: `{${idArtistsArray.join(',')}}`, // Ensure array is correctly formatted
-        artists: parseArray(track.artists), // Ensure artists is an array
+        id_artists: `{${idArtistsArray.join(',')}}`,
+        artists: parseArray(track.artists),
       };
     });
 };
@@ -92,11 +94,7 @@ const filterArtists = async (
     tracks.flatMap((track) => track.id_artists.replace(/[{}]/g, '').split(',')),
   );
 
-  const filteredArtists = artists.filter((artist) =>
-    trackArtistIds.has(artist.id),
-  );
-
-  return filteredArtists;
+  return artists.filter((artist) => trackArtistIds.has(artist.id));
 };
 
 const ensureArray = (field: string | string[]): string[] => {
@@ -111,7 +109,9 @@ const ensureArray = (field: string | string[]): string[] => {
   }
 };
 
-const handleEmptyValues = (value: string | undefined): string | number | null => {
+const handleEmptyValues = (
+  value: string | undefined,
+): string | number | null => {
   if (value === undefined || value === '') {
     return null;
   }
@@ -169,6 +169,22 @@ const downloadFromS3 = async (
   console.log(`File downloaded successfully from ${bucketName}/${key}`);
 };
 
+const execPromise = util.promisify(exec);
+
+const copyFileToDocker = async (
+  srcPath: string,
+  containerName: string,
+  destPath: string,
+) => {
+  // Create the directory inside the container
+  const dir = path.dirname(destPath);
+  await execPromise(`docker exec ${containerName} mkdir -p ${dir}`);
+  
+  // Copy the file to the container
+  await execPromise(`docker cp ${srcPath} ${containerName}:${destPath}`);
+  console.log(`File copied successfully to ${containerName}:${destPath}`);
+};
+
 const executeSQLFile = async (
   client: Client,
   filePath: string,
@@ -180,40 +196,13 @@ const executeSQLFile = async (
 
 const loadCSVToPostgres = async (
   client: Client,
-  filePath: string,
+  containerName: string,
+  destPath: string,
   tableName: string,
-  headers: string[],
 ): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    const readStream = fs.createReadStream(filePath);
-    const csvStream = csv();
-
-    readStream.pipe(csvStream);
-
-    csvStream.on('data', async (row) => {
-      const transformedRow = headers.reduce((acc, header) => {
-        acc[header] = handleEmptyValues(row[header]);
-        return acc;
-      }, {} as ObjectMap<unknown>);
-      const columns = Object.keys(transformedRow);
-      const values = Object.values(transformedRow);
-      const query = `INSERT INTO ${tableName} (${columns.join(
-        ', ',
-      )}) VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})`;
-      try {
-        await client.query(query, values);
-      } catch (err) {
-        reject(err);
-      }
-    });
-
-    csvStream.on('end', () => {
-      console.log(`CSV data loaded into ${tableName}`);
-      resolve();
-    });
-
-    csvStream.on('error', (err) => reject(err));
-  });
+  const query = `COPY ${tableName} FROM '${destPath}' WITH (FORMAT csv, HEADER true)`;
+  await client.query(query);
+  console.log(`CSV data loaded into ${tableName}`);
 };
 
 const main = async () => {
@@ -283,7 +272,7 @@ const main = async () => {
 
     const client = new Client({
       user: process.env.PG_USER,
-      host: process.env.PG_HOST,
+      host: 'localhost',
       database: process.env.PG_DATABASE,
       password: process.env.PG_PASSWORD,
       port: parseInt(process.env.PG_PORT as string, 10),
@@ -299,33 +288,15 @@ const main = async () => {
       transformedDataFile,
     );
 
-    await loadCSVToPostgres(client, transformedDataFile, 'tracks', [
-      'id',
-      'name',
-      'popularity',
-      'duration_ms',
-      'explicit',
-      'artists',
-      'id_artists',
-      'energy',
-      'key',
-      'loudness',
-      'mode',
-      'speechiness',
-      'acousticness',
-      'instrumentalness',
-      'liveness',
-      'valence',
-      'tempo',
-      'time_signature',
-      'release_year',
-      'release_month',
-      'release_day',
-      'danceability_label',
-      'artist_followers',
-      'artist_genres',
-      'artist_popularity',
-    ]);
+    console.log('Copying file to Docker container...');
+    await copyFileToDocker(
+      transformedDataFile,
+      'local-postgres',
+      '/data/transformed_data.csv',
+    );
+    console.log('File copied to Docker container successfully');
+
+    await loadCSVToPostgres(client, 'local-postgres', '/data/transformed_data.csv', 'tracks');
 
     await client.end();
 
