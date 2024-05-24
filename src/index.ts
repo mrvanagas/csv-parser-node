@@ -1,76 +1,57 @@
-import fs from 'fs';
+// src/main.ts
 import path from 'path';
-import csv from 'csv-parser';
-import { createObjectCsvWriter } from 'csv-writer';
-import AWS from 'aws-sdk';
-import { Client } from 'pg';
 import dotenv from 'dotenv';
+import { Client } from 'pg';
+import { readCSV, writeCSV } from './csv/csvOperations';
+import { uploadToS3, downloadFromS3 } from './aws/s3Operations';
+import {
+  executeSQLFile,
+  loadCSVToPostgres,
+  copyFileToDocker,
+} from './db/dbOperations';
+import { parseArray, ensureArray } from './helpers/helperFunctions';
 import { Artist } from './models/artists';
 import { Track, TransformedTrack } from './models/tracks';
-import { exec } from 'child_process';
-import util from 'util';
+import {
+  tracksFilePath,
+  artistsFilePath,
+  transformedDataFile,
+  s3BucketName,
+  createTablesFile,
+  createTrackSummaryViewFile,
+  createTracksWithFollowersViewFile,
+  createMostEnergisingTracksViewFile,
+} from './constants/constants';
 
 dotenv.config();
 
-type ObjectMap<T> = { [key: string]: T };
+// const artistsFilePath = path.join(__dirname, '../data/artists.csv');
+// const tracksFilePath = path.join(__dirname, '../data/tracks.csv');
+// const transformedDataFile = path.join(
+//   __dirname,
+//   '../data/transformed_data.csv',
+// );
+// const createTablesFile = path.join(
+//   __dirname,
+//   '../src/sql_scripts/create_tables.sql',
+// );
+// const createTrackSummaryViewFile = path.join(
+//   __dirname,
+//   '../src/sql_scripts/create_track_summary_view.sql',
+// );
+// const createTracksWithFollowersViewFile = path.join(
+//   __dirname,
+//   '../src/sql_scripts/create_tracks_with_artist_followers_view.sql',
+// );
+// const createMostEnergisingTracksViewFile = path.join(
+//   __dirname,
+//   '../src/sql_scripts/create_most_energising_tracks_view.sql',
+// );
 
-const artistsFilePath = path.join(__dirname, '../data/artists.csv');
-const tracksFilePath = path.join(__dirname, '../data/tracks.csv');
-const transformedDataFile = path.join(
-  __dirname,
-  '../data/transformed_data.csv',
-);
-const createTablesFile = path.join(
-  __dirname,
-  '../src/sql_scripts/create_tables.sql',
-);
-
-const createTrackSummaryViewFile = path.join(
-  __dirname,
-  '../src/sql_scripts/create_track_summary_view.sql',
-);
-
-const createTracksWithFollowersViewFile = path.join(
-  __dirname,
-  '../src/sql_scripts/create_tracks_with_artist_followers_view.sql',
-);
-
-const createMostEnergisingTracksViewFile = path.join(
-  __dirname,
-  '../src/sql_scripts/create_most_energising_tracks_view.sql',
-);
-
-const s3BucketName = process.env.S3_BUCKET_NAME as string;
-if (!s3BucketName) {
-  throw new Error('S3_BUCKET_NAME environment variable is not set');
-}
-
-const readCSV = <T extends ObjectMap<any>>(filePath: string): Promise<T[]> => {
-  return new Promise((resolve, reject) => {
-    const results: T[] = [];
-    fs.createReadStream(filePath)
-      .pipe(csv())
-      .on('data', (data: T) => results.push(data))
-      .on('end', () => resolve(results))
-      .on('error', (error) => reject(error));
-  });
-};
-
-const parseArray = (array: string | string[]): string[] => {
-  if (Array.isArray(array)) {
-    return array;
-  }
-
-  try {
-    const cleanedArray = array.replace(/'/g, '"').replace(/^\[|\]$/g, '');
-    return JSON.parse(`[${cleanedArray}]`);
-  } catch (error) {
-    return array
-      .replace(/^\[|\]$/g, '')
-      .split(',')
-      .map((item) => item.trim().replace(/^'|'$/g, ''));
-  }
-};
+// const s3BucketName = process.env.S3_BUCKET_NAME as string;
+// if (!s3BucketName) {
+//   throw new Error('S3_BUCKET_NAME environment variable is not set');
+// }
 
 const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
   return tracks
@@ -110,114 +91,6 @@ const filterArtists = async (
   );
 
   return artists.filter((artist) => trackArtistIds.has(artist.id));
-};
-
-const ensureArray = (field: string | string[]): string[] => {
-  if (Array.isArray(field)) {
-    return field;
-  }
-
-  try {
-    return JSON.parse(field);
-  } catch (error) {
-    return field.split(',').map((item) => item.trim());
-  }
-};
-
-const handleEmptyValues = (
-  value: string | undefined,
-): string | number | null => {
-  if (value === undefined || value === '') {
-    return null;
-  }
-  if (!isNaN(Number(value))) {
-    return Number(value);
-  }
-  return value;
-};
-
-const writeCSV = async <T extends ObjectMap<any>>(
-  filePath: string,
-  records: T[],
-  headers: string[],
-): Promise<void> => {
-  console.log(`Starting writing ${filePath}`);
-  const csvWriter = createObjectCsvWriter({
-    path: filePath,
-    header: headers.map((header) => ({ id: header, title: header })),
-  });
-  await csvWriter.writeRecords(records);
-  console.log(`Finished writing ${filePath}`);
-};
-
-const uploadToS3 = async (
-  filePath: string,
-  bucketName: string,
-  key: string,
-): Promise<void> => {
-  const s3 = new AWS.S3();
-  const fileStream = fs.createReadStream(filePath);
-
-  const params = {
-    Bucket: bucketName,
-    Key: key,
-    Body: fileStream,
-  };
-
-  await s3.upload(params).promise();
-  console.log(`File uploaded successfully to ${bucketName}/${key}`);
-};
-
-const downloadFromS3 = async (
-  bucketName: string,
-  key: string,
-  downloadPath: string,
-): Promise<void> => {
-  const s3 = new AWS.S3();
-  const params = {
-    Bucket: bucketName,
-    Key: key,
-  };
-
-  const data = await s3.getObject(params).promise();
-  fs.writeFileSync(downloadPath, data.Body as Buffer);
-  console.log(`File downloaded successfully from ${bucketName}/${key}`);
-};
-
-const execPromise = util.promisify(exec);
-
-const copyFileToDocker = async (
-  srcPath: string,
-  containerName: string,
-  destPath: string,
-) => {
-  // Create the directory inside the container
-  const dir = path.dirname(destPath);
-  await execPromise(`docker exec ${containerName} mkdir -p ${dir}`);
-
-  // Copy the file to the container
-  await execPromise(`docker cp ${srcPath} ${containerName}:${destPath}`);
-  console.log(`File copied successfully to ${containerName}:${destPath}`);
-};
-
-const executeSQLFile = async (
-  client: Client,
-  filePath: string,
-): Promise<void> => {
-  const sql = fs.readFileSync(filePath, 'utf8');
-  await client.query(sql);
-  console.log(`SQL script ${filePath} executed successfully.`);
-};
-
-const loadCSVToPostgres = async (
-  client: Client,
-  containerName: string,
-  destPath: string,
-  tableName: string,
-): Promise<void> => {
-  const query = `COPY ${tableName} FROM '${destPath}' WITH (FORMAT csv, HEADER true)`;
-  await client.query(query);
-  console.log(`CSV data loaded into ${tableName}`);
 };
 
 const main = async () => {
