@@ -25,6 +25,21 @@ const createTablesFile = path.join(
   '../src/sql_scripts/create_tables.sql',
 );
 
+const createTrackSummaryViewFile = path.join(
+  __dirname,
+  '../src/sql_scripts/create_track_summary_view.sql',
+);
+
+const createTracksWithFollowersViewFile = path.join(
+  __dirname,
+  '../src/sql_scripts/create_tracks_with_artist_followers_view.sql',
+);
+
+const createMostEnergisingTracksViewFile = path.join(
+  __dirname,
+  '../src/sql_scripts/create_most_energising_tracks_view.sql',
+);
+
 const s3BucketName = process.env.S3_BUCKET_NAME as string;
 if (!s3BucketName) {
   throw new Error('S3_BUCKET_NAME environment variable is not set');
@@ -179,7 +194,7 @@ const copyFileToDocker = async (
   // Create the directory inside the container
   const dir = path.dirname(destPath);
   await execPromise(`docker exec ${containerName} mkdir -p ${dir}`);
-  
+
   // Copy the file to the container
   await execPromise(`docker cp ${srcPath} ${containerName}:${destPath}`);
   console.log(`File copied successfully to ${containerName}:${destPath}`);
@@ -296,7 +311,16 @@ const main = async () => {
     );
     console.log('File copied to Docker container successfully');
 
-    await loadCSVToPostgres(client, 'local-postgres', '/data/transformed_data.csv', 'tracks');
+    await loadCSVToPostgres(
+      client,
+      'local-postgres',
+      '/data/transformed_data.csv',
+      'tracks',
+    );
+
+    await executeSQLFile(client, createTrackSummaryViewFile);
+    await executeSQLFile(client, createTracksWithFollowersViewFile);
+    await executeSQLFile(client, createMostEnergisingTracksViewFile);
 
     await client.end();
 
