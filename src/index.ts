@@ -1,5 +1,3 @@
-// src/main.ts
-import path from 'path';
 import dotenv from 'dotenv';
 import { Client } from 'pg';
 import { readCSV, writeCSV } from './csv/csvOperations';
@@ -25,7 +23,7 @@ import {
 
 dotenv.config();
 
-const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
+export const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
   return tracks
     .filter((track) => track.name && track.duration_ms >= 60000)
     .map((track) => {
@@ -53,10 +51,10 @@ const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
     });
 };
 
-const filterArtists = async (
+export const filterArtists = (
   artists: Artist[],
   tracks: TransformedTrack[],
-): Promise<Artist[]> => {
+): Artist[] => {
   console.log('Starting to filter artists...');
   const trackArtistIds = new Set(
     tracks.flatMap((track) => track.id_artists.replace(/[{}]/g, '').split(',')),
@@ -172,6 +170,8 @@ const main = async () => {
     console.log('Data loaded into PostgreSQL successfully.');
   } catch (error) {
     console.error('Error processing CSV files', error);
+  } finally {
+    process.exit();
   }
 };
 
