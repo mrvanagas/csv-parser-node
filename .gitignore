@@ -12,6 +12,7 @@ node_modules/
 # Build artifacts
 dist/
 build/
+data/*
 
 # Environment variables
 .env
