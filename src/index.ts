@@ -25,34 +25,6 @@ import {
 
 dotenv.config();
 
-// const artistsFilePath = path.join(__dirname, '../data/artists.csv');
-// const tracksFilePath = path.join(__dirname, '../data/tracks.csv');
-// const transformedDataFile = path.join(
-//   __dirname,
-//   '../data/transformed_data.csv',
-// );
-// const createTablesFile = path.join(
-//   __dirname,
-//   '../src/sql_scripts/create_tables.sql',
-// );
-// const createTrackSummaryViewFile = path.join(
-//   __dirname,
-//   '../src/sql_scripts/create_track_summary_view.sql',
-// );
-// const createTracksWithFollowersViewFile = path.join(
-//   __dirname,
-//   '../src/sql_scripts/create_tracks_with_artist_followers_view.sql',
-// );
-// const createMostEnergisingTracksViewFile = path.join(
-//   __dirname,
-//   '../src/sql_scripts/create_most_energising_tracks_view.sql',
-// );
-
-// const s3BucketName = process.env.S3_BUCKET_NAME as string;
-// if (!s3BucketName) {
-//   throw new Error('S3_BUCKET_NAME environment variable is not set');
-// }
-
 const filterAndTransformTracks = (tracks: Track[]): TransformedTrack[] => {
   return tracks
     .filter((track) => track.name && track.duration_ms >= 60000)

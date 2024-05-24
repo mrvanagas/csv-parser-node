@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const rootDir = path.resolve(__dirname, '..', '..'); // Adjust the path to point to the root directory of your project
+const rootDir = path.resolve(__dirname, '..', '..');
 
 export const artistsFilePath = path.join(rootDir, 'data', 'artists.csv');
 export const tracksFilePath = path.join(rootDir, 'data', 'tracks.csv');
